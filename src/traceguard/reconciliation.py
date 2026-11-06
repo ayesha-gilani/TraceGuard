@@ -38,6 +38,7 @@ def reconcile(
 
     # A reconciliation call must contain exactly one tenant/order.
     scopes = {(e.tenant_id, e.order_id) for e in events}
+
     if len(scopes) > 1:
         add_anomaly(
             "MIXED_ORDER_SCOPE",
@@ -75,7 +76,9 @@ def reconcile(
             "Checkout records disagree about the expected amount or currency.",
             [e.event_id for e in order_events],
         )
-        return unknown("Conflicting checkout definitions prevent reconciliation.")
+        return unknown(
+            "Conflicting checkout definitions prevent reconciliation."
+        )
 
     expected_cents, currency = next(iter(definitions))
 
@@ -99,7 +102,9 @@ def reconcile(
     if integrity_failed or any(
         a.severity == "CRITICAL" for a in anomalies
     ):
-        return unknown("Critical validation or integrity issues were detected.")
+        return unknown(
+            "Critical validation or integrity issues were detected."
+        )
 
     payment_events = [
         e for e in financial_events if e.source == "payments"
@@ -112,9 +117,12 @@ def reconcile(
 
     # Process in a stable order so input ordering cannot change results.
     for event in sorted(payment_events, key=lambda e: e.event_id):
+
+        # Preserve evidence even when this event causes an anomaly.
+        evidence_ids.add(event.event_id)
+
         if event.type == "PAYMENT_FAILED":
             has_payment_failure = True
-            evidence_ids.add(event.event_id)
 
         elif event.type == "PAYMENT_CAPTURED":
             capture_id = event.capture_id
@@ -241,27 +249,30 @@ def reconcile(
             )
         else:
             valid_chargeback = True
-            evidence_ids.add(chargeback.event_id)
 
     if any(a.severity == "CRITICAL" for a in anomalies):
-        return unknown("Invalid financial references or amounts were detected.")
+        return unknown(
+            "Invalid financial references or amounts were detected."
+        )
 
     # All financial checks passed. Calculate totals.
     refunded_total = sum(r["amount"] for r in valid_refunds)
-
-    evidence_ids.update(c["event_id"] for c in captures.values())
-    evidence_ids.update(r["event_id"] for r in valid_refunds)
+    captured_total = sum(c["amount"] for c in captures.values())
 
     net_paid = captured_total - refunded_total
 
     # Determine status using the required precedence.
     if valid_chargeback:
         status = "DISPUTED"
-        explanation = "A valid open chargeback references a recorded payment capture."
+        explanation = (
+            "A valid open chargeback references a recorded payment capture."
+        )
 
     elif captured_total == 0 and has_payment_failure:
         status = "UNPAID"
-        explanation = "No payment was captured; a payment failure was recorded."
+        explanation = (
+            "No payment was captured; a payment failure was recorded."
+        )
 
     elif captured_total > 0 and refunded_total == captured_total:
         status = "REFUNDED"
@@ -277,11 +288,15 @@ def reconcile(
 
     elif 0 < captured_total < expected_cents:
         status = "PARTIALLY_PAID"
-        explanation = "The captured amount is less than the checkout amount."
+        explanation = (
+            "The captured amount is less than the checkout amount."
+        )
 
     else:
         status = "UNKNOWN"
-        explanation = "Available records do not establish a payment outcome."
+        explanation = (
+            "Available records do not establish a payment outcome."
+        )
 
     confidence = "LOW" if status == "UNKNOWN" else "HIGH"
 
